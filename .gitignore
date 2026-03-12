@@ -1,0 +1,57 @@
+# --- OS / editor ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+.vscode/
+.idea/
+
+# --- Secrets / env ---
+.env
+.env.*
+!.env.example
+
+# --- Logs ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+
+.venv/
+venv/
+ENV/
+env/
+
+# --- Node / Vite / React ---
+node_modules/
+**/node_modules/
+
+dist/
+build/
+out/
+release/
+.vite/
+**/.vite/
+
+# Vite/TS build caches
+*.tsbuildinfo
+
+# --- Electron ---
+*.asar
+
+# --- ChromaDB persistence (local cache) ---
+backend/database/.chroma/

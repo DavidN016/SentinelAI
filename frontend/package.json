@@ -4,6 +4,7 @@
   "private": true,
   "main": "src/main.js",
   "scripts": {
+    "dev": "npm run start",
     "start": "concurrently \"npm:electron\" \"npm:react\"",
     "electron": "electron .",
     "react": "vite",
