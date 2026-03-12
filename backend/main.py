@@ -15,6 +15,7 @@ if _REPO_ROOT not in sys.path:
 from shared.schemas import Alert, PacketEvent
 
 from backend.database.vector_store import ThreatVectorStore, embed_text, fingerprint_text
+from backend.agents.graph import run_threat_workflow
 
 app = FastAPI(title="SentinelAI Backend")
 
@@ -101,51 +102,41 @@ async def websocket_endpoint(websocket: WebSocket):
                 normalized_text
             )
 
-            # 2.2.3 If hit: return cached Alert immediately (skip agents/LLM)
+            # 2.2.3 If hit: return cached Alert immediately (skip agents/LLM).
+            # We never echo the raw input back to the client; only the Alert JSON.
             if cached_alert is not None:
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "ok": True,
-                            "cached": True,
-                            "alert": cached_alert,
-                            "event_id": cache_key,
-                        }
-                    )
-                )
+                cached_alert["is_repeat_offender"] = True
+                cached_alert["event_id"] = cache_key
+                await websocket.send_text(json.dumps(cached_alert))
                 continue
 
-            # Cache miss: for now, create a stub alert and store it so the cache path
-            # can be validated end-to-end. Step 4 will replace this with real agents.
-            stub_alert = Alert(
-                fault="stub",
-                severity="low",
-                explanation="No cached match; analysis pipeline not yet implemented.",
+            # 2.3 Analyze path (only if not cached): run the threat workflow to
+            # produce a single Alert, then persist it alongside the embedding +
+            # metadata so later repeats can be served from cache.
+            alert = await run_threat_workflow(
+                event,
                 is_repeat_offender=is_repeat_offender,
                 event_id=cache_key,
             )
+
             vector_store.upsert_event(
                 event_id=cache_key,
                 embedding=embed_text(normalized_text),
                 metadata={
                     "fingerprint": cache_key,
                     "normalized_text": normalized_text,
-                    "alert": stub_alert.model_dump(mode="json"),
+                    # Chroma metadata values must be scalar; store alert as JSON string.
+                    "alert_json": alert.model_dump_json(),
+                    "fault": alert.fault,
+                    "severity": alert.severity,
+                    "is_repeat_offender": bool(alert.is_repeat_offender),
                 },
             )
 
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "cached": False,
-                        "event": event.model_dump(mode="json"),
-                        "normalized_text": normalized_text,
-                        "event_id": cache_key,
-                        "alert": stub_alert.model_dump(mode="json"),
-                    }
-                )
-            )
+            # 2.4 WebSocket output handling:
+            # 2.4.1 Send Alert JSON back over WS
+            # 2.4.2 Never echo raw input
+            await websocket.send_text(alert.model_dump_json())
     except WebSocketDisconnect:
         # Client disconnected; nothing special to do yet
         pass

@@ -1,6 +1,7 @@
 import hashlib
 import math
 import os
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -125,16 +126,30 @@ class ThreatVectorStore:
 
         # 1) Exact hit by fingerprint
         meta = self.get_metadata_by_id(key)
-        if meta and isinstance(meta.get("alert"), dict):
-            return True, meta["alert"]
+        if meta:
+            alert_json = meta.get("alert_json")
+            if isinstance(alert_json, str) and alert_json.strip():
+                try:
+                    parsed = json.loads(alert_json)
+                    if isinstance(parsed, dict):
+                        return True, parsed
+                except Exception:
+                    pass
 
         # 2) Near-duplicate hit by embedding similarity
         emb = embed_text(normalized_text)
-        res = self.collection.query(
-            query_embeddings=[emb],
-            n_results=1,
-            include=["metadatas", "distances", "ids"],
-        )
+        try:
+            res = self.collection.query(
+                query_embeddings=[emb],
+                n_results=1,
+                include=["metadatas", "distances"],
+            )
+        except ValueError as e:
+            # Some Chroma versions raise if "ids" ends up in the include set
+            # internally. Fall back to defaults.
+            if "got ids" not in str(e):
+                raise
+            res = self.collection.query(query_embeddings=[emb], n_results=1)
         ids = (res.get("ids") or [[]])[0]
         distances = (res.get("distances") or [[]])[0]
         metadatas = (res.get("metadatas") or [[]])[0]
@@ -145,7 +160,13 @@ class ThreatVectorStore:
         best_distance = distances[0]
         best_meta = metadatas[0]
         if best_distance is not None and best_distance <= near_duplicate_threshold:
-            if isinstance(best_meta.get("alert"), dict):
-                return True, best_meta["alert"]
+            alert_json = best_meta.get("alert_json")
+            if isinstance(alert_json, str) and alert_json.strip():
+                try:
+                    parsed = json.loads(alert_json)
+                    if isinstance(parsed, dict):
+                        return True, parsed
+                except Exception:
+                    pass
 
         return False, None
