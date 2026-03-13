@@ -6,6 +6,17 @@ const WS_URL = process.env.SENTINELAI_WS_URL || "ws://127.0.0.1:8000/ws/threats"
 const MIN_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30000;
 
+/** 5.2 Capture stub: interval (ms) between fake SQLi events */
+const CAPTURE_STUB_INTERVAL_MS = 30 * 1000;
+
+function makeStubPacketEvent() {
+  return {
+    timestamp: new Date().toISOString(),
+    source: "electron-capture-stub",
+    payload: "' OR 1=1--",
+  };
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
@@ -28,6 +39,7 @@ function createWindow() {
 let mainWindow = null;
 let ws = null;
 let reconnectTimer = null;
+let captureStubTimer = null;
 let reconnectDelay = MIN_RECONNECT_MS;
 let connectionStatus = "disconnected"; // 'disconnected' | 'connecting' | 'connected'
 
@@ -104,12 +116,30 @@ function sendPacketEvent(payload) {
   }
 }
 
+function startCaptureStub() {
+  if (captureStubTimer) return;
+  captureStubTimer = setInterval(() => {
+    if (ws && ws.readyState === 1) {
+      sendPacketEvent(makeStubPacketEvent());
+    }
+  }, CAPTURE_STUB_INTERVAL_MS);
+}
+
+function stopCaptureStub() {
+  if (captureStubTimer) {
+    clearInterval(captureStubTimer);
+    captureStubTimer = null;
+  }
+}
+
 app.whenReady().then(() => {
   mainWindow = createWindow();
   connect();
+  startCaptureStub();
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    stopCaptureStub();
     if (ws) {
       ws.close();
       ws = null;
