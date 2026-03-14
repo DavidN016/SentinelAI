@@ -12,8 +12,8 @@ from typing import Any, Dict
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
+load_dotenv()  # allow backend/.env override
+api_key = os.getenv("GROQ_API_KEY")
 # AgentResult shape: fault (str), severity ("high"|"medium"|"low"), explanation (str)
 AgentResult = Dict[str, Any]
 
@@ -26,13 +26,12 @@ DEFAULT_RESULT: AgentResult = {
 
 
 def _get_llm():
-    """Lazy init of ChatGroq to avoid import-time API key requirement."""
-    api_key = os.environ.get("GROQ_API_KEY")
+    """Lazy init of ChatGroq; uses module-level api_key from .env."""
     if not api_key:
         raise RuntimeError(
             "GROQ_API_KEY is not set. Set it in the environment or a .env file to use threat-analysis agents."
         )
-    from langchain_groq import ChatGroq
+    from langchain_groq import ChatGroq  # type: ignore[import-untyped]
 
     return ChatGroq(
         model="llama-3.1-8b-instant",
@@ -42,34 +41,41 @@ def _get_llm():
     )
 
 
-def _parse_llm_response(content: str) -> AgentResult:
-    """Parse LLM content into AgentResult; normalize severity; fallback to DEFAULT_RESULT on error."""
-    if not content or not content.strip():
-        return dict(DEFAULT_RESULT)
-    text = content.strip()
-    # Extract JSON object: first { to matching }
+def _extract_json_span(text: str) -> str | None:
+    """Find first {...} span in text; return that slice or None."""
     start = text.find("{")
     if start == -1:
-        return dict(DEFAULT_RESULT)
+        return None
     depth = 0
-    end = -1
     for i in range(start, len(text)):
         if text[i] == "{":
             depth += 1
         elif text[i] == "}":
             depth -= 1
             if depth == 0:
-                end = i + 1
-                break
-    if end == -1:
+                return text[start : i + 1]
+    return None
+
+
+def _dict_to_agent_result(data: dict) -> AgentResult:
+    """Convert parsed dict to AgentResult with normalized severity."""
+    fault = str(data.get("fault") or DEFAULT_RESULT["fault"]).strip() or DEFAULT_RESULT["fault"]
+    raw_severity = (data.get("severity") or "").strip().lower()
+    severity = raw_severity if raw_severity in VALID_SEVERITIES else "low"
+    explanation = str(data.get("explanation") or DEFAULT_RESULT["explanation"]).strip() or DEFAULT_RESULT["explanation"]
+    return {"fault": fault, "severity": severity, "explanation": explanation}
+
+
+def _parse_llm_response(content: str) -> AgentResult:
+    """Parse LLM content into AgentResult; normalize severity; fallback to DEFAULT_RESULT on error."""
+    if not content or not content.strip():
+        return dict(DEFAULT_RESULT)
+    json_str = _extract_json_span(content.strip())
+    if json_str is None:
         return dict(DEFAULT_RESULT)
     try:
-        data = json.loads(text[start:end])
-        fault = str(data.get("fault") or DEFAULT_RESULT["fault"]).strip() or DEFAULT_RESULT["fault"]
-        raw_severity = (data.get("severity") or "").strip().lower()
-        severity = raw_severity if raw_severity in VALID_SEVERITIES else "low"
-        explanation = str(data.get("explanation") or DEFAULT_RESULT["explanation"]).strip() or DEFAULT_RESULT["explanation"]
-        return {"fault": fault, "severity": severity, "explanation": explanation}
+        data = json.loads(json_str)
+        return _dict_to_agent_result(data)
     except (json.JSONDecodeError, TypeError):
         return dict(DEFAULT_RESULT)
 
