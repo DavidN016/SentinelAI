@@ -16,9 +16,180 @@ type BackendMessage =
       message: string
     }
 
+/** One alert plus optional raw payload for details (6.3.2) */
+type AlertEntry = { alert: BackendMessage; raw?: string }
+
 const WS_URL = 'ws://127.0.0.1:8000/ws/threats'
 
 const isElectron = typeof window !== 'undefined' && !!window.sentinelai
+
+function LatestAlertCard({
+  alert,
+  rawPayload,
+  rawDetailsOpen,
+  onToggleRawDetails,
+}: {
+  alert: AlertMessage
+  rawPayload?: string
+  rawDetailsOpen: boolean
+  onToggleRawDetails: () => void
+}) {
+  return (
+    <div
+      style={{
+        borderRadius: '0.75rem',
+        padding: '0.85rem',
+        border: '1px solid rgba(248, 250, 252, 0.05)',
+        background: alert.is_repeat_offender
+          ? 'linear-gradient(135deg, rgba(22, 163, 74, 0.25), rgba(15, 23, 42, 0.95))'
+          : 'linear-gradient(135deg, rgba(220, 38, 38, 0.25), rgba(15, 23, 42, 0.95))',
+      }}
+    >
+      <div
+        style={{
+          fontSize: '0.7rem',
+          fontWeight: 600,
+          color: '#94a3b8',
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+          marginBottom: '0.2rem',
+        }}
+      >
+        Fault
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '0.5rem',
+          marginBottom: '0.75rem',
+          flexWrap: 'wrap',
+        }}
+      >
+        <span style={{ fontWeight: 600, fontSize: '1rem', color: '#f1f5f9' }}>
+          {alert.fault}
+        </span>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.4rem',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span
+            style={{
+              fontSize: '0.75rem',
+              padding: '0.15rem 0.55rem',
+              borderRadius: '999px',
+              backgroundColor:
+                alert.severity === 'high'
+                  ? '#dc2626'
+                  : alert.severity === 'medium'
+                    ? '#ea580c'
+                    : '#4b5563',
+              color: '#f9fafb',
+            }}
+          >
+            {alert.severity}
+          </span>
+          {alert.is_repeat_offender && (
+            <span
+              style={{
+                fontSize: '0.75rem',
+                padding: '0.15rem 0.55rem',
+                borderRadius: '999px',
+                backgroundColor: '#22c55e',
+                color: '#0f172a',
+                fontWeight: 600,
+              }}
+            >
+              Cached
+            </span>
+          )}
+          <span
+            style={{
+              fontSize: '0.75rem',
+              padding: '0.15rem 0.55rem',
+              borderRadius: '999px',
+              backgroundColor: alert.is_repeat_offender ? '#15803d' : '#f97316',
+              color: alert.is_repeat_offender ? '#f0fdf4' : '#0f172a',
+              fontWeight: 600,
+            }}
+          >
+            {alert.is_repeat_offender ? 'Repeat offender' : 'First seen'}
+          </span>
+        </div>
+      </div>
+      <div
+        style={{
+          fontSize: '0.7rem',
+          fontWeight: 600,
+          color: '#94a3b8',
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+          marginBottom: '0.25rem',
+        }}
+      >
+        Explanation
+      </div>
+      <p style={{ margin: 0, fontSize: '0.9rem', color: '#e5e7eb', lineHeight: 1.45 }}>
+        {alert.explanation}
+      </p>
+      <p
+        style={{
+          margin: 0,
+          marginTop: '0.5rem',
+          fontSize: '0.75rem',
+          color: '#9ca3af',
+        }}
+      >
+        event_id: <code>{alert.event_id}</code>
+      </p>
+      <div style={{ marginTop: '0.75rem' }}>
+        <button
+          type="button"
+          onClick={onToggleRawDetails}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.35rem',
+            padding: '0.35rem 0',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            color: '#94a3b8',
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+          }}
+        >
+          {rawDetailsOpen ? '▼' : '▶'} Raw event payload
+        </button>
+        {rawDetailsOpen && (
+          <pre
+            style={{
+              margin: 0,
+              padding: '0.6rem',
+              fontSize: '0.75rem',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, monospace',
+              background: 'rgba(0, 0, 0, 0.35)',
+              borderRadius: '0.4rem',
+              border: '1px solid rgba(148, 163, 184, 0.25)',
+              color: '#cbd5e1',
+              overflow: 'auto',
+              maxHeight: 200,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {rawPayload ?? JSON.stringify(alert, null, 2)}
+          </pre>
+        )}
+      </div>
+    </div>
+  )
+}
 
 export default function App() {
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected'>(
@@ -28,10 +199,15 @@ export default function App() {
     JSON.stringify({ source: 'frontend', payload: "' OR 1=1--" }, null, 2),
   )
   const [rawMessages, setRawMessages] = useState<string[]>([])
-  const [alerts, setAlerts] = useState<BackendMessage[]>([])
-  const wsRef = useRef<WebSocket | null>(null)
 
-  // IPC bridge (Electron): main forwards backend alerts; stub capture also sends events → backend → alerts
+  // 6.1.1 Alert ingestion: subscribe via preload IPC, store history + derive latest
+  const [alertHistory, setAlertHistory] = useState<AlertEntry[]>([])
+  const latestEntry = alertHistory.at(-1)
+  const latestAlert = latestEntry?.alert
+  const wsRef = useRef<WebSocket | null>(null)
+  const [rawDetailsOpen, setRawDetailsOpen] = useState(false)
+
+  // IPC bridge (Electron): subscribe to alerts from main; store each in history
   useEffect(() => {
     if (!isElectron || !window.sentinelai) return
 
@@ -45,11 +221,11 @@ export default function App() {
         const parsed = (
           typeof payload === 'string' ? JSON.parse(payload) : payload
         ) as BackendMessage
-        setAlerts((prev) => [...prev, parsed])
+        setAlertHistory((prev) => [...prev, { alert: parsed, raw }])
       } catch {
-        setAlerts((prev) => [
+        setAlertHistory((prev) => [
           ...prev,
-          { error: 'parse_failed', message: raw.slice(0, 200) },
+          { alert: { error: 'parse_failed', message: raw.slice(0, 200) }, raw },
         ])
       }
     })
@@ -77,10 +253,11 @@ export default function App() {
       setStatus('disconnected')
     }
     socket.onmessage = (event) => {
-      setRawMessages((prev) => [...prev, event.data as string])
+      const data = event.data as string
+      setRawMessages((prev) => [...prev, data])
       try {
-        const parsed = JSON.parse(event.data as string) as BackendMessage
-        setAlerts((prev) => [...prev, parsed])
+        const parsed = JSON.parse(data) as BackendMessage
+        setAlertHistory((prev) => [...prev, { alert: parsed, raw: data }])
       } catch {
         // keep raw string only
       }
@@ -106,11 +283,13 @@ export default function App() {
       }
       window.sentinelai.sendEvent(payload).then((result) => {
         if (!result.ok) {
-          setAlerts((prev) => [
+          setAlertHistory((prev) => [
             ...prev,
             {
-              error: 'send_failed',
-              message: result.error ?? 'Unknown error',
+              alert: {
+                error: 'send_failed',
+                message: result.error ?? 'Unknown error',
+              },
             },
           ])
         }
@@ -124,7 +303,7 @@ export default function App() {
         message:
           'WebSocket is not connected. Ensure the backend is running on ws://127.0.0.1:8000/ws/threats.',
       }
-      setAlerts((prev) => [...prev, errorMessage])
+      setAlertHistory((prev) => [...prev, { alert: errorMessage }])
       return
     }
 
@@ -135,12 +314,9 @@ export default function App() {
         error: 'send_failed',
         message: err instanceof Error ? err.message : String(err),
       }
-      setAlerts((prev) => [...prev, errorMessage])
+      setAlertHistory((prev) => [...prev, { alert: errorMessage }])
     }
   }
-
-  const latestAlert =
-    alerts.length > 0 ? alerts[alerts.length - 1] : undefined
 
   const statusColor =
     status === 'connected'
@@ -148,6 +324,14 @@ export default function App() {
       : status === 'connecting'
         ? '#f97316'
         : '#b91c1c'
+
+  // 6.2.1 Active incident: high-severity alert → red state + sticky banner
+  const activeIncident =
+    latestAlert &&
+    !('error' in latestAlert) &&
+    (latestAlert as AlertMessage).severity === 'high'
+      ? (latestAlert as AlertMessage)
+      : null
 
   return (
     <div
@@ -160,6 +344,55 @@ export default function App() {
         color: '#e5e7eb',
       }}
     >
+      {/* 6.2.1 Red banner + sticky "active incident" when severity is high */}
+      {activeIncident && (
+        <div
+          role="alert"
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
+            marginBottom: '1rem',
+            padding: '0.75rem 1rem',
+            background: 'linear-gradient(90deg, #7f1d1d 0%, #991b1b 50%, #b91c1c 100%)',
+            border: '1px solid #dc2626',
+            borderRadius: '0.5rem',
+            color: '#fef2f2',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            flexWrap: 'wrap',
+            boxShadow: '0 4px 14px rgba(220, 38, 38, 0.35)',
+          }}
+        >
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.35rem',
+              fontWeight: 700,
+              fontSize: '0.9rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: '#fef2f2',
+                animation: 'pulse 1.5s ease-in-out infinite',
+              }}
+            />
+            Active incident
+          </span>
+          <span style={{ fontSize: '0.9rem', opacity: 0.95 }}>
+            {activeIncident.fault}
+          </span>
+        </div>
+      )}
+
       <header style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: '1.6rem' }}>SentinelAI Threat Dashboard</h1>
@@ -264,13 +497,31 @@ export default function App() {
           <div
             style={{
               borderRadius: '0.9rem',
-              border: '1px solid rgba(148, 163, 184, 0.4)',
-              background: '#020617',
+              border:
+                activeIncident
+                  ? '2px solid #dc2626'
+                  : '1px solid rgba(148, 163, 184, 0.4)',
+              background: activeIncident
+                ? 'rgba(127, 29, 29, 0.2)'
+                : '#020617',
               padding: '1rem',
             }}
           >
             <h2 style={{ marginTop: 0, marginBottom: '0.6rem', fontSize: '1rem' }}>
               Latest Alert
+              {activeIncident && (
+                <span
+                  style={{
+                    marginLeft: '0.5rem',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    color: '#fca5a5',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  — Active incident
+                </span>
+              )}
             </h2>
             {!latestAlert || 'error' in latestAlert ? (
               <p style={{ fontSize: '0.9rem', color: '#9ca3af', margin: 0 }}>
@@ -279,88 +530,12 @@ export default function App() {
                   : 'No alerts yet. Send an event to see the stub alert.'}
               </p>
             ) : (
-              // At this point latestAlert is an AlertMessage
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              ((alert => (
-              <div
-                style={{
-                  borderRadius: '0.75rem',
-                  padding: '0.85rem',
-                  border: '1px solid rgba(248, 250, 252, 0.05)',
-                  background:
-                    alert.is_repeat_offender
-                      ? 'linear-gradient(135deg, rgba(22, 163, 74, 0.25), rgba(15, 23, 42, 0.95))'
-                      : 'linear-gradient(135deg, rgba(220, 38, 38, 0.25), rgba(15, 23, 42, 0.95))',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '0.5rem',
-                    marginBottom: '0.4rem',
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>
-                    {alert.fault}
-                  </span>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.4rem',
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: '0.75rem',
-                        padding: '0.15rem 0.55rem',
-                        borderRadius: '999px',
-                        backgroundColor:
-                          alert.severity === 'high'
-                            ? '#dc2626'
-                            : alert.severity === 'medium'
-                              ? '#ea580c'
-                              : '#4b5563',
-                        color: '#f9fafb',
-                      }}
-                    >
-                      {alert.severity}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: '0.75rem',
-                        padding: '0.15rem 0.55rem',
-                        borderRadius: '999px',
-                        backgroundColor: alert.is_repeat_offender
-                          ? '#22c55e'
-                          : '#f97316',
-                        color: '#0f172a',
-                        fontWeight: 600,
-                      }}
-                    >
-                      {alert.is_repeat_offender ? 'Repeat offender (cached)' : 'First seen'}
-                    </span>
-                  </div>
-                </div>
-                <p style={{ margin: 0, fontSize: '0.9rem', color: '#e5e7eb' }}>
-                  {alert.explanation}
-                </p>
-                <p
-                  style={{
-                    margin: 0,
-                    marginTop: '0.35rem',
-                    fontSize: '0.75rem',
-                    color: '#9ca3af',
-                  }}
-                >
-                  event_id: <code>{alert.event_id}</code>
-                </p>
-              </div>
-              ))(latestAlert as AlertMessage))
+              <LatestAlertCard
+                alert={latestAlert as AlertMessage}
+                rawPayload={latestEntry?.raw}
+                rawDetailsOpen={rawDetailsOpen}
+                onToggleRawDetails={() => setRawDetailsOpen((open) => !open)}
+              />
             )}
           </div>
 
@@ -386,7 +561,7 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setRawMessages([])
-                    setAlerts([])
+                    setAlertHistory([])
                   }}
                   style={{
                     fontSize: '0.75rem',

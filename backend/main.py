@@ -4,6 +4,9 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+# Disable ChromaDB telemetry before any chromadb import (avoids capture() signature errors)
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 

@@ -6,6 +6,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import chromadb  # type: ignore
+    from chromadb.config import Settings
+    # No-op telemetry to avoid "capture() takes 1 positional argument but 3 were given" (Chroma #4997 / PostHog API mismatch)
+    try:
+        from chromadb.telemetry.product.posthog import Posthog
+        Posthog.capture = lambda self, event: None  # type: ignore[method-assign]
+    except Exception:
+        pass
 except ImportError:  # pragma: no cover - optional dependency at this stage
     chromadb = None
 
@@ -72,7 +79,9 @@ class ThreatVectorStore:
                 os.path.join(os.path.dirname(__file__), ".chroma"),
             )
 
-        client = chromadb.PersistentClient(path=persist_path)
+        # Disable telemetry to avoid "capture() takes 1 positional argument but 3 were given" (Chroma #4997)
+        settings = Settings(anonymized_telemetry=False)
+        client = chromadb.PersistentClient(path=persist_path, settings=settings)
         self.collection = client.get_or_create_collection(collection_name)
 
     def add_events(
