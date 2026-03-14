@@ -18,6 +18,8 @@ type BackendMessage =
 
 const WS_URL = 'ws://127.0.0.1:8000/ws/threats'
 
+const isElectron = typeof window !== 'undefined' && !!window.sentinelai
+
 export default function App() {
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected'>(
     'disconnected',
@@ -29,7 +31,39 @@ export default function App() {
   const [alerts, setAlerts] = useState<BackendMessage[]>([])
   const wsRef = useRef<WebSocket | null>(null)
 
+  // IPC bridge (Electron): main forwards backend alerts; stub capture also sends events → backend → alerts
   useEffect(() => {
+    if (!isElectron || !window.sentinelai) return
+
+    window.sentinelai.getConnectionStatus().then(setStatus)
+    const removeStatus = window.sentinelai!.onConnectionStatus(setStatus)
+    const removeAlert = window.sentinelai!.onAlert((payload: unknown) => {
+      const raw =
+        typeof payload === 'string' ? payload : JSON.stringify(payload)
+      setRawMessages((prev) => [...prev, raw])
+      try {
+        const parsed = (
+          typeof payload === 'string' ? JSON.parse(payload) : payload
+        ) as BackendMessage
+        setAlerts((prev) => [...prev, parsed])
+      } catch {
+        setAlerts((prev) => [
+          ...prev,
+          { error: 'parse_failed', message: raw.slice(0, 200) },
+        ])
+      }
+    })
+
+    return () => {
+      removeStatus()
+      removeAlert()
+    }
+  }, [])
+
+  // Direct WebSocket (browser / non-Electron)
+  useEffect(() => {
+    if (isElectron) return
+
     setStatus('connecting')
     const socket = new WebSocket(WS_URL)
     wsRef.current = socket
@@ -55,15 +89,34 @@ export default function App() {
     return () => {
       socket.close()
     }
-  }, [])
+  }, [isElectron])
 
   const handleSend = () => {
     const trimmed = input.trim()
     if (!trimmed) return
 
-    // Echo the outbound message into the raw stream so the user
-    // always sees that the click did something.
     setRawMessages((prev) => [...prev, `→ ${trimmed}`])
+
+    if (isElectron && window.sentinelai) {
+      let payload: object | string
+      try {
+        payload = JSON.parse(trimmed) as object
+      } catch {
+        payload = trimmed
+      }
+      window.sentinelai.sendEvent(payload).then((result) => {
+        if (!result.ok) {
+          setAlerts((prev) => [
+            ...prev,
+            {
+              error: 'send_failed',
+              message: result.error ?? 'Unknown error',
+            },
+          ])
+        }
+      })
+      return
+    }
 
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       const errorMessage: BackendMessage = {
@@ -282,7 +335,9 @@ export default function App() {
                         fontSize: '0.75rem',
                         padding: '0.15rem 0.55rem',
                         borderRadius: '999px',
-                        backgroundColor: latestAlert.cached ? '#22c55e' : '#f97316',
+                        backgroundColor: alert.is_repeat_offender
+                          ? '#22c55e'
+                          : '#f97316',
                         color: '#0f172a',
                         fontWeight: 600,
                       }}

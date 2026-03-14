@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("sentinelai", {
+  /**
+   * Subscribe to alerts forwarded from main (backend → main → renderer).
+   * @param { (payload: unknown) => void } callback - invoked for each alert
+   * @returns { () => void } removeListener - call to unsubscribe
+   */
   onAlert(callback) {
     const handler = (_, payload) => callback(payload);
     ipcRenderer.on("sentinelai:alert", handler);

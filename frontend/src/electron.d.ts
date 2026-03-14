@@ -5,6 +5,7 @@
 export type ConnectionStatus = "disconnected" | "connecting" | "connected";
 
 export interface SentinelAI {
+  /** Subscribe to alerts from main. Returns removeListener (call to unsubscribe). */
   onAlert(callback: (payload: unknown) => void): () => void;
   onConnectionStatus(callback: (status: ConnectionStatus) => void): () => void;
   sendEvent(payload: object | string): Promise<{ ok: boolean; error?: string }>;
