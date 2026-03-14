@@ -3,4 +3,5 @@ uvicorn[standard]==0.32.1
 chromadb==0.5.23
 langchain==0.3.7
 langgraph==0.2.39
+langchain-groq>=0.2.0
 python-dotenv==1.0.1

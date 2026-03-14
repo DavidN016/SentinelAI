@@ -17,6 +17,20 @@ except ImportError:  # pragma: no cover - optional dependency at this stage
     chromadb = None
 
 
+def _chroma_result_to_dict(res: Any) -> Dict[str, Any]:
+    """Normalize Chroma get/query result to dict for .get() access."""
+    if res is None:
+        return {}
+    if isinstance(res, dict):
+        return res
+    # Attribute-style result (e.g. some Chroma wrappers): pull only the fields we use
+    return {
+        "ids": getattr(res, "ids", None),
+        "metadatas": getattr(res, "metadatas", None),
+        "distances": getattr(res, "distances", None),
+    }
+
+
 def fingerprint_text(text: str) -> str:
     """
     Deterministic key for an event's canonical text.
@@ -100,15 +114,18 @@ class ThreatVectorStore:
         metadata: Dict[str, Any],
     ) -> None:
         # Chroma supports upsert via add; if id exists, it will raise unless we delete first.
-        # For this stage, do a best-effort delete then add.
-        try:
-            self.collection.delete(ids=[event_id])
-        except Exception:
-            pass
+        # Only delete when the id exists to avoid "Delete of nonexisting embedding ID" logs.
+        if self.get_metadata_by_id(event_id) is not None:
+            try:
+                self.collection.delete(ids=[event_id])
+            except Exception:
+                pass
         self.collection.add(ids=[event_id], embeddings=[embedding], metadatas=[metadata])
 
     def get_metadata_by_id(self, event_id: str) -> Optional[Dict[str, Any]]:
-        res = self.collection.get(ids=[event_id], include=["metadatas"])
+        res = _chroma_result_to_dict(
+            self.collection.get(ids=[event_id], include=["metadatas"])
+        )
         metadatas = res.get("metadatas") or []
         if not metadatas:
             return None
@@ -118,6 +135,16 @@ class ThreatVectorStore:
         self, query_embedding: List[float], n_results: int = 5
     ) -> Dict[str, Any]:
         return self.collection.query(query_embeddings=[query_embedding], n_results=n_results)
+
+    def delete_all(self) -> int:
+        """
+        Delete every document in the collection. Returns the number of ids removed.
+        """
+        res = _chroma_result_to_dict(self.collection.get(include=[]))
+        ids = res.get("ids") or []
+        if ids:
+            self.collection.delete(ids=ids)
+        return len(ids)
 
     def find_cached_alert(
         self,
@@ -145,7 +172,12 @@ class ThreatVectorStore:
                 except Exception:
                     pass
 
-        # 2) Near-duplicate hit by embedding similarity
+        # 2) Near-duplicate hit by embedding similarity (skip query if collection is empty to avoid n_results warning)
+        res = _chroma_result_to_dict(self.collection.get(include=[]))
+        all_ids = res.get("ids") or []
+        if not all_ids:
+            return False, None
+
         emb = embed_text(normalized_text)
         try:
             res = self.collection.query(
@@ -159,6 +191,7 @@ class ThreatVectorStore:
             if "got ids" not in str(e):
                 raise
             res = self.collection.query(query_embeddings=[emb], n_results=1)
+        res = _chroma_result_to_dict(res)
         ids = (res.get("ids") or [[]])[0]
         distances = (res.get("distances") or [[]])[0]
         metadatas = (res.get("metadatas") or [[]])[0]

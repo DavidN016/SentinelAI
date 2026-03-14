@@ -1,106 +1,69 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
-from shared.schemas import PacketEvent, Severity
+from shared.schemas import PacketEvent
 
+from backend.agents.llm import analyze_with_llm
 
 AgentResult = Dict[str, Any]
 
+# System prompts for each agent; each must ask for JSON with fault, severity, explanation.
+XSS_SYSTEM_PROMPT = """You are a security analyst detecting Cross-Site Scripting (XSS) in user-supplied payloads.
+Analyze the payload for XSS indicators: script tags, event handlers (onclick, onerror, etc.), javascript: URIs, HTML entity encoding, SVG/embed, data URIs, or other XSS tricks.
+Respond with exactly a JSON object with three keys: "fault", "severity", "explanation".
+- fault: short identifier (e.g. xss_suspected, no_xss_detected).
+- severity: one of high, medium, low. Use high for clear XSS payloads, medium for suspicious patterns, low for benign.
+- explanation: one or two sentences for the analyst."""
 
-async def analyze_sql_activity(event: PacketEvent) -> AgentResult:
-    """
-    Lightweight SQL analysis stub.
+SQL_SYSTEM_PROMPT = """You are a security analyst detecting SQL injection in user-supplied payloads.
+Analyze the payload for SQL injection: quote breaking (' OR 1=1--), UNION SELECT, stacked queries, comment tricks (--, #), DROP/INSERT/UPDATE, xp_cmdshell, time-based patterns, or other SQLi techniques.
+Respond with exactly a JSON object with three keys: "fault", "severity", "explanation".
+- fault: short identifier (e.g. sql_injection_suspected, sql_activity_observed, no_sql_threat_detected).
+- severity: one of high, medium, low. Use high for clear SQLi, medium for suspicious SQL-like input, low for benign.
+- explanation: one or two sentences for the analyst."""
 
-    Looks for very simple SQL injection-style patterns in the payload and
-    returns a fault + severity + explanation.
-    """
-
-    text = (event.payload or "").lower()
-
-    # Extremely naive heuristics – this is intentionally simple and cheap.
-    indicators_high = [
-        "' or 1=1",
-        "\" or 1=1",
-        " or 1=1--",
-        " or 1=1 ;",
-        "union select",
-        "drop table",
-        "xp_cmdshell",
-    ]
-    indicators_medium = [
-        "select ",
-        "insert ",
-        "update ",
-        "delete ",
-        " where ",
-    ]
-
-    if any(indicator in text for indicator in indicators_high):
-        return {
-            "fault": "sql_injection_suspected",
-            "severity": "high",
-            "explanation": "Payload contains classic SQL injection patterns (e.g. OR 1=1 / UNION SELECT / DROP TABLE).",
-        }
-
-    if any(indicator in text for indicator in indicators_medium):
-        return {
-            "fault": "sql_activity_observed",
-            "severity": "medium",
-            "explanation": "Payload appears to contain SQL statements; monitor for potential abuse.",
-        }
-
-    return {
-        "fault": "no_sql_threat_detected",
-        "severity": "low",
-        "explanation": "No obvious SQL injection or dangerous SQL patterns were detected in the payload.",
-    }
+PAYLOAD_SYSTEM_PROMPT = """You are a security analyst assessing generic payload risk.
+Consider: unusual length or entropy, command-injection-like patterns, encoding/obfuscation, path traversal, suspicious delimiters, or other anomalous content. Empty or trivial payloads are low risk.
+Respond with exactly a JSON object with three keys: "fault", "severity", "explanation".
+- fault: short identifier (e.g. suspicious_payload_anomaly, command_injection_suspected, no_anomaly_detected).
+- severity: one of high, medium, low.
+- explanation: one or two sentences for the analyst."""
 
 
-async def detect_anomalies(event: PacketEvent) -> AgentResult:
-    """
-    Simple anomaly detector stub.
-
-    Uses a few cheap heuristics (length, character diversity) to flag
-    unusual payloads. This is deliberately lightweight and easily
-    replaceable with a real model later.
-    """
-
-    payload = event.payload or ""
-    length = len(payload)
-    unique_chars = len(set(payload))
-
-    # Heuristic: extremely long or highly "noisy" payloads are suspicious.
-    if length > 2000 or unique_chars > 80:
-        return {
-            "fault": "suspicious_payload_anomaly",
-            "severity": "medium",
-            "explanation": "Payload length/entropy is unusually high for typical queries; treat as anomalous.",
-        }
-
-    if length == 0:
-        return {
-            "fault": "empty_payload",
-            "severity": "low",
-            "explanation": "Payload is empty; no content to analyze.",
-        }
-
-    return {
-        "fault": "no_anomaly_detected",
-        "severity": "low",
-        "explanation": "Payload shape appears within normal bounds for length and character diversity.",
-    }
+def _payload(event: Union[PacketEvent, Dict[str, Any]]) -> str:
+    """Read payload from event (dict or PacketEvent); avoids .keys() on model."""
+    if isinstance(event, dict):
+        return event.get("payload") or ""
+    return getattr(event, "payload", None) or ""
 
 
-async def _safe_run(agent_fn, event: PacketEvent) -> AgentResult:
+async def analyze_xss(event: Union[PacketEvent, Dict[str, Any]]) -> AgentResult:
+    """XSS analysis using Groq Llama 3."""
+    payload_text = _payload(event) or ""
+    return await analyze_with_llm(payload_text, "xss", XSS_SYSTEM_PROMPT)
+
+
+async def analyze_sql_activity(event: Union[PacketEvent, Dict[str, Any]]) -> AgentResult:
+    """SQL injection analysis using Groq Llama 3."""
+    payload_text = _payload(event) or ""
+    return await analyze_with_llm(payload_text, "sql", SQL_SYSTEM_PROMPT)
+
+
+async def analyze_payload(event: Union[PacketEvent, Dict[str, Any]]) -> AgentResult:
+    """Generic payload / anomaly analysis using Groq Llama 3."""
+    payload_text = _payload(event) or ""
+    return await analyze_with_llm(payload_text, "payload", PAYLOAD_SYSTEM_PROMPT)
+
+
+async def _safe_run(agent_fn, event: Union[PacketEvent, Dict[str, Any]]) -> AgentResult:
     """
     Run an agent with a safety net so one failure does not crash the request.
     """
-
     try:
         return await agent_fn(event)
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
         return {
             "fault": "agent_error",
             "severity": "low",
@@ -108,13 +71,23 @@ async def _safe_run(agent_fn, event: PacketEvent) -> AgentResult:
         }
 
 
-async def run_agents_in_parallel(event: PacketEvent) -> list[AgentResult]:
-    """
-    Entry point used by the threat workflow to fan out to all agents.
-    """
+def _event_to_dict(event: Union[PacketEvent, Dict[str, Any]]) -> Dict[str, Any]:
+    """Ensure agents always receive a dict. PacketEvent has no .keys(); callers (or deps) may use mapping protocol."""
+    if isinstance(event, dict):
+        return event
+    if hasattr(event, "model_dump") and callable(getattr(event, "model_dump")):
+        return event.model_dump()
+    return {}
 
+
+async def run_agents_in_parallel(event: Union[PacketEvent, Dict[str, Any]]) -> list[AgentResult]:
+    """
+    Run XSS, SQL, and Payload agents in parallel. Used when not using the LangGraph pipeline.
+    """
+    event_dict = _event_to_dict(event)
     results = await asyncio.gather(
-        _safe_run(analyze_sql_activity, event),
-        _safe_run(detect_anomalies, event),
+        _safe_run(analyze_xss, event_dict),
+        _safe_run(analyze_sql_activity, event_dict),
+        _safe_run(analyze_payload, event_dict),
     )
     return list(results)
