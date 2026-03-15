@@ -21,6 +21,80 @@ type AlertEntry = { alert: BackendMessage; raw?: string };
 
 const WS_URL = "ws://127.0.0.1:8000/ws/threats";
 
+/** Deterministic fake IP and MAC from event_id for network log display */
+function deriveNetworkDisplay(id: string) {
+  const hash = id.padEnd(32, "0").slice(0, 32);
+  const ipPart = (i: number) =>
+    String(Number.parseInt(hash.slice(i * 2, i * 2 + 2), 16) % 256);
+  const srcIp = `${ipPart(0)}.${ipPart(1)}.${ipPart(2)}.${ipPart(3)}`;
+  const dstIp = `${ipPart(4)}.${ipPart(5)}.${ipPart(6)}.${ipPart(7)}`;
+  const mac = (offset: number) =>
+    [0, 1, 2, 3, 4, 5]
+      .map((j) => hash.slice((offset + j) * 2, (offset + j) * 2 + 2))
+      .join(":")
+      .toLowerCase();
+  return {
+    srcIp,
+    dstIp,
+    srcMac: mac(6),
+    dstMac: mac(12),
+    protocols: "HTTP, TCP",
+  };
+}
+
+/** Build raw packet metadata JSON for detail view */
+function buildRawPacketMetadata(entry: AlertEntry): string {
+  const alert = entry.alert;
+  const id = "error" in alert ? "unknown" : (alert as AlertMessage).event_id;
+  const { srcIp, dstIp, srcMac, dstMac } = deriveNetworkDisplay(id);
+  const timestamp = new Date().toISOString();
+  const payload =
+    typeof entry.raw === "string" && entry.raw.startsWith("{")
+      ? (() => {
+          try {
+            const o = JSON.parse(entry.raw ?? "{}") as { payload?: string };
+            return o.payload ?? entry.raw ?? "";
+          } catch {
+            return entry.raw ?? "";
+          }
+        })()
+      : entry.raw ?? "";
+  const fault = "error" in alert ? alert.error : (alert as AlertMessage).fault;
+  const explanation =
+    "error" in alert ? (alert as { message: string }).message : (alert as AlertMessage).explanation;
+  const severity = "error" in alert ? "low" : (alert as AlertMessage).severity;
+  const threatDetected = severity === "high" || severity === "medium";
+  const metadata = {
+    response: {
+      packet: {
+        timestamp,
+        eth: { src_mac: srcMac, dst_mac: dstMac, ethertype: 2048 },
+        ip: {
+          src_ip: srcIp,
+          dst_ip: dstIp,
+          version: 4,
+          ttl: 64,
+          protocol: 6,
+        },
+        tcp: {
+          src_port: 49152,
+          dst_port: 3306,
+          seq: 1234567890,
+          ack: 987654321,
+          flags: "PA",
+        },
+        payload: payload.slice(0, 200),
+      },
+      xss_agent_msg: fault.includes("xss") ? explanation : "",
+      SQLi_agent_msg: fault.includes("sql") ? explanation : "",
+      payload_agent_msg: fault.includes("payload") || fault.includes("anomaly") ? explanation : "",
+      threat_detected: threatDetected,
+      feedback: "",
+    },
+  };
+  return JSON.stringify(metadata, null, 2);
+}
+
 const isElectron = typeof window !== "undefined" && !!window.sentinelai;
 
 function LatestAlertCard({
@@ -214,6 +288,12 @@ export default function App() {
   const latestAlert = latestEntry?.alert;
   const wsRef = useRef<WebSocket | null>(null);
   const [rawDetailsOpen, setRawDetailsOpen] = useState(false);
+  const [selectedLogIndex, setSelectedLogIndex] = useState<number | null>(null);
+
+  const maliciousCount = alertHistory.filter(
+    (e) => !("error" in e.alert) && ((e.alert as AlertMessage).severity === "high" || (e.alert as AlertMessage).severity === "medium")
+  ).length;
+  const selectedEntry = selectedLogIndex != null ? alertHistory[selectedLogIndex] : null;
 
   // IPC bridge (Electron): subscribe to alerts from main; store each in history
   useEffect(() => {
@@ -461,40 +541,281 @@ export default function App() {
       <main
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(0, 1.3fr) minmax(0, 1fr)",
+          gridTemplateColumns: "2fr 1fr",
           gap: "1.5rem",
-          alignItems: "flex-start",
+          alignItems: "stretch",
+          minHeight: "calc(100vh - 10rem)",
         }}
       >
+        {/* Left 2/3: Network Logs + detail on click */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "1rem",
+            minWidth: 0,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "0.5rem",
+            }}
+          >
+            <h2 style={{ margin: 0, fontSize: "1.25rem", fontWeight: 600 }}>
+              Network Logs
+            </h2>
+            <span
+              style={{
+                fontSize: "0.9rem",
+                color: "#94a3b8",
+                fontWeight: 500,
+              }}
+            >
+              Malicious Packets: {maliciousCount}
+            </span>
+          </div>
+
+          <div
+            style={{
+              flex: selectedEntry ? "0 0 auto" : "1 1 auto",
+              minHeight: 200,
+              maxHeight: selectedEntry ? 280 : "none",
+              overflowY: "auto",
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.75rem",
+              paddingRight: "0.25rem",
+            }}
+          >
+            {alertHistory.length === 0 ? (
+              <p style={{ color: "#9ca3af", fontSize: "0.9rem", margin: 0 }}>
+                No packets yet. Send an event from the Test Event panel.
+              </p>
+            ) : (
+              alertHistory.map((entry, index) => {
+                const alert = entry.alert;
+                const isError = "error" in alert;
+                const severity = isError ? "low" : (alert as AlertMessage).severity;
+                const isWarning = severity === "high" || severity === "medium";
+                const id = isError ? `err-${index}` : (alert as AlertMessage).event_id;
+                const { srcIp, dstIp, srcMac, dstMac, protocols } = deriveNetworkDisplay(id);
+                const time = new Date().toISOString().slice(11, 19);
+                const isSelected = selectedLogIndex === index;
+                return (
+                  <button
+                    type="button"
+                    key={`${id}-${index}`}
+                    onClick={() => setSelectedLogIndex(index)}
+                    style={{
+                      textAlign: "left",
+                      padding: "0.85rem 1rem",
+                      borderRadius: "0.5rem",
+                      border: isSelected ? "2px solid #6366f1" : "1px solid rgba(148, 163, 184, 0.3)",
+                      background: isSelected ? "rgba(99, 102, 241, 0.15)" : "rgba(15, 23, 42, 0.8)",
+                      color: "#e5e7eb",
+                      cursor: "pointer",
+                      display: "block",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                        gap: "0.5rem",
+                        marginBottom: "0.6rem",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: "0.7rem",
+                          fontWeight: 700,
+                          padding: "0.2rem 0.5rem",
+                          borderRadius: "0.25rem",
+                          backgroundColor: isWarning ? "#dc2626" : "#16a34a",
+                          color: "#fff",
+                        }}
+                      >
+                        {isWarning ? "WARNING" : "INFO"}
+                      </span>
+                      <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+                        {protocols}
+                      </span>
+                      <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+                        {time}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr auto 1fr",
+                        gap: "0.75rem",
+                        alignItems: "center",
+                        fontSize: "0.85rem",
+                      }}
+                    >
+                      <div>
+                        <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginBottom: "0.2rem" }}>Source IP</div>
+                        <div style={{ fontWeight: 600 }}>{srcIp}</div>
+                        <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginBottom: "0.2rem" }}>Source MAC</div>
+                        <div style={{ fontWeight: 600 }}>{srcMac}</div>
+                      </div>
+                      <span style={{ color: "#64748b", fontSize: "1.2rem" }}>→</span>
+                      <div>
+                        <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginBottom: "0.2rem" }}>Destination IP</div>
+                        <div style={{ fontWeight: 600 }}>{dstIp}</div>
+                        <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginBottom: "0.2rem" }}>Destination MAC</div>
+                        <div style={{ fontWeight: 600 }}>{dstMac}</div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          {selectedEntry && (
+            <div
+              style={{
+                flex: "1 1 auto",
+                minHeight: 240,
+                display: "grid",
+                gridTemplateColumns: "2fr 1fr",
+                gap: "1rem",
+                borderRadius: "0.5rem",
+                border: "1px solid rgba(148, 163, 184, 0.3)",
+                overflow: "hidden",
+                background: "#0f172a",
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                <h3 style={{ margin: "0.75rem 1rem", fontSize: "0.95rem", fontWeight: 600 }}>
+                  Raw Packet Metadata
+                </h3>
+                <pre
+                  style={{
+                    flex: 1,
+                    margin: 0,
+                    padding: "1rem",
+                    fontSize: "0.75rem",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+                    background: "#020617",
+                    color: "#e5e7eb",
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    borderTop: "1px solid rgba(148, 163, 184, 0.2)",
+                  }}
+                >
+                  {buildRawPacketMetadata(selectedEntry)}
+                </pre>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "0.75rem",
+                  padding: "1rem",
+                  borderLeft: "1px solid rgba(148, 163, 184, 0.2)",
+                  overflowY: "auto",
+                }}
+              >
+                <h3 style={{ margin: 0, fontSize: "0.95rem", fontWeight: 600 }}>
+                  Threat Analysis
+                </h3>
+                {!("error" in selectedEntry.alert) && (
+                  <>
+                    <div
+                      style={{
+                        padding: "0.75rem",
+                        borderRadius: "0.4rem",
+                        border: (selectedEntry.alert as AlertMessage).severity === "high" ? "2px solid #dc2626" : "1px solid rgba(148, 163, 184, 0.3)",
+                        background: (selectedEntry.alert as AlertMessage).severity === "high" ? "rgba(220, 38, 38, 0.15)" : "transparent",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: "0.8rem",
+                          fontWeight: 600,
+                          color: (selectedEntry.alert as AlertMessage).severity === "high" ? "#dc2626" : "#94a3b8",
+                          marginBottom: "0.35rem",
+                        }}
+                      >
+                        {(selectedEntry.alert as AlertMessage).fault.replace(/_/g, " ")}
+                      </div>
+                      <p style={{ margin: 0, fontSize: "0.8rem", color: "#e5e7eb", lineHeight: 1.4 }}>
+                        {(selectedEntry.alert as AlertMessage).explanation}
+                      </p>
+                    </div>
+                    <div
+                      style={{
+                        padding: "0.75rem",
+                        borderRadius: "0.4rem",
+                        border: "1px solid rgba(148, 163, 184, 0.3)",
+                        background: "rgba(15, 23, 42, 0.5)",
+                      }}
+                    >
+                      <div style={{ fontSize: "0.75rem", fontWeight: 600, color: "#94a3b8", marginBottom: "0.35rem" }}>
+                        Additional Details
+                      </div>
+                      <div style={{ fontSize: "0.8rem", color: "#e5e7eb" }}>
+                        <div>Protocol: HTTP, TCP</div>
+                        <div>Source IP: {deriveNetworkDisplay((selectedEntry.alert as AlertMessage).event_id).srcIp}</div>
+                        <div>Destination IP: {deriveNetworkDisplay((selectedEntry.alert as AlertMessage).event_id).dstIp}</div>
+                        <div>Timestamp: {new Date().toISOString()}</div>
+                      </div>
+                    </div>
+                  </>
+                )}
+                {"error" in selectedEntry.alert && (
+                  <div
+                    style={{
+                      padding: "0.75rem",
+                      borderRadius: "0.4rem",
+                      border: "1px solid #dc2626",
+                      background: "rgba(220, 38, 38, 0.1)",
+                      color: "#fca5a5",
+                      fontSize: "0.85rem",
+                    }}
+                  >
+                    {(selectedEntry.alert as { error: string; message: string }).message}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right 1/3: Test Event */}
         <section
           style={{
             borderRadius: "0.9rem",
             border: "1px solid rgba(148, 163, 184, 0.4)",
-            background:
-              "radial-gradient(circle at top left, rgba(37, 99, 235, 0.35), transparent 55%), #020617",
+            background: "#020617",
             padding: "1.1rem",
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 0,
           }}
         >
-          <h2
-            style={{ marginTop: 0, marginBottom: "0.75rem", fontSize: "1rem" }}
-          >
+          <h2 style={{ marginTop: 0, marginBottom: "0.5rem", fontSize: "1.1rem", fontWeight: 600 }}>
             Test Event
           </h2>
           <p
             style={{
               marginTop: 0,
               marginBottom: "0.75rem",
-              fontSize: "0.9rem",
+              fontSize: "0.85rem",
               color: "#9ca3af",
             }}
           >
             Edit the JSON payload and send it to{" "}
-            <code
-              style={{
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco",
-                fontSize: "0.8rem",
-              }}
-            >
+            <code style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco", fontSize: "0.8rem" }}>
               {WS_URL}
             </code>
             .
@@ -508,12 +829,13 @@ export default function App() {
               resize: "vertical",
               borderRadius: "0.6rem",
               border: "1px solid rgba(148, 163, 184, 0.7)",
-              background: "#020617",
+              background: "#0f172a",
               color: "#e5e7eb",
               padding: "0.75rem",
               fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco",
               fontSize: "0.85rem",
               marginBottom: "0.75rem",
+              boxSizing: "border-box",
             }}
           />
           <button
@@ -536,127 +858,6 @@ export default function App() {
           >
             Send event
           </button>
-        </section>
-
-        <section
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "1rem",
-          }}
-        >
-          <div
-            style={{
-              borderRadius: "0.9rem",
-              border: activeIncident
-                ? "2px solid #dc2626"
-                : "1px solid rgba(148, 163, 184, 0.4)",
-              background: activeIncident ? "rgba(127, 29, 29, 0.2)" : "#020617",
-              padding: "1rem",
-            }}
-          >
-            <h2
-              style={{ marginTop: 0, marginBottom: "0.6rem", fontSize: "1rem" }}
-            >
-              Latest Alert
-              {activeIncident && (
-                <span
-                  style={{
-                    marginLeft: "0.5rem",
-                    fontSize: "0.75rem",
-                    fontWeight: 600,
-                    color: "#fca5a5",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  — Active incident
-                </span>
-              )}
-            </h2>
-            {!latestAlert || "error" in latestAlert ? (
-              <p style={{ fontSize: "0.9rem", color: "#9ca3af", margin: 0 }}>
-                {latestAlert && "error" in latestAlert
-                  ? `Error: ${latestAlert.message}`
-                  : "No alerts yet. Send an event to see the stub alert."}
-              </p>
-            ) : (
-              <LatestAlertCard
-                alert={latestAlert as AlertMessage}
-                rawPayload={latestEntry?.raw}
-                rawDetailsOpen={rawDetailsOpen}
-                onToggleRawDetails={() => setRawDetailsOpen((open) => !open)}
-              />
-            )}
-          </div>
-
-          <div
-            style={{
-              borderRadius: "0.9rem",
-              border: "1px solid rgba(148, 163, 184, 0.4)",
-              background: "#020617",
-              padding: "1rem",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: "0.5rem",
-              }}
-            >
-              <h2 style={{ margin: 0, fontSize: "1rem" }}>Raw Stream</h2>
-              {rawMessages.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRawMessages([]);
-                    setAlertHistory([]);
-                  }}
-                  style={{
-                    fontSize: "0.75rem",
-                    padding: "0.2rem 0.5rem",
-                    borderRadius: "0.4rem",
-                    border: "1px solid rgba(148, 163, 184, 0.7)",
-                    background: "#020617",
-                    color: "#e5e7eb",
-                    cursor: "pointer",
-                  }}
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            <div
-              style={{
-                maxHeight: 220,
-                overflowY: "auto",
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco",
-                fontSize: "0.8rem",
-                background: "#020617",
-                borderRadius: "0.6rem",
-                border: "1px solid rgba(30, 64, 175, 0.6)",
-                padding: "0.6rem",
-              }}
-            >
-              {rawMessages.length === 0 ? (
-                <div style={{ opacity: 0.6 }}>No messages yet.</div>
-              ) : (
-                rawMessages.map((m, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      marginBottom: "0.25rem",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                    }}
-                  >
-                    {m}
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
         </section>
       </main>
     </div>
