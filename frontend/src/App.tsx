@@ -58,10 +58,12 @@ function buildRawPacketMetadata(entry: AlertEntry): string {
             return entry.raw ?? "";
           }
         })()
-      : entry.raw ?? "";
+      : (entry.raw ?? "");
   const fault = "error" in alert ? alert.error : (alert as AlertMessage).fault;
   const explanation =
-    "error" in alert ? (alert as { message: string }).message : (alert as AlertMessage).explanation;
+    "error" in alert
+      ? (alert as { message: string }).message
+      : (alert as AlertMessage).explanation;
   const severity = "error" in alert ? "low" : (alert as AlertMessage).severity;
   const threatDetected = severity === "high" || severity === "medium";
   const metadata = {
@@ -87,7 +89,10 @@ function buildRawPacketMetadata(entry: AlertEntry): string {
       },
       xss_agent_msg: fault.includes("xss") ? explanation : "",
       SQLi_agent_msg: fault.includes("sql") ? explanation : "",
-      payload_agent_msg: fault.includes("payload") || fault.includes("anomaly") ? explanation : "",
+      payload_agent_msg:
+        fault.includes("payload") || fault.includes("anomaly")
+          ? explanation
+          : "",
       threat_detected: threatDetected,
       feedback: "",
     },
@@ -291,9 +296,13 @@ export default function App() {
   const [selectedLogIndex, setSelectedLogIndex] = useState<number | null>(null);
 
   const maliciousCount = alertHistory.filter(
-    (e) => !("error" in e.alert) && ((e.alert as AlertMessage).severity === "high" || (e.alert as AlertMessage).severity === "medium")
+    (e) =>
+      !("error" in e.alert) &&
+      ((e.alert as AlertMessage).severity === "high" ||
+        (e.alert as AlertMessage).severity === "medium"),
   ).length;
-  const selectedEntry = selectedLogIndex != null ? alertHistory[selectedLogIndex] : null;
+  const selectedEntry =
+    selectedLogIndex != null ? alertHistory[selectedLogIndex] : null;
 
   // IPC bridge (Electron): subscribe to alerts from main; store each in history
   useEffect(() => {
@@ -599,10 +608,15 @@ export default function App() {
               alertHistory.map((entry, index) => {
                 const alert = entry.alert;
                 const isError = "error" in alert;
-                const severity = isError ? "low" : (alert as AlertMessage).severity;
+                const severity = isError
+                  ? "low"
+                  : (alert as AlertMessage).severity;
                 const isWarning = severity === "high" || severity === "medium";
-                const id = isError ? `err-${index}` : (alert as AlertMessage).event_id;
-                const { srcIp, dstIp, srcMac, dstMac, protocols } = deriveNetworkDisplay(id);
+                const id = isError
+                  ? `err-${index}`
+                  : (alert as AlertMessage).event_id;
+                const { srcIp, dstIp, srcMac, dstMac, protocols } =
+                  deriveNetworkDisplay(id);
                 const time = new Date().toISOString().slice(11, 19);
                 const isSelected = selectedLogIndex === index;
                 return (
@@ -614,8 +628,12 @@ export default function App() {
                       textAlign: "left",
                       padding: "0.85rem 1rem",
                       borderRadius: "0.5rem",
-                      border: isSelected ? "2px solid #6366f1" : "1px solid rgba(148, 163, 184, 0.3)",
-                      background: isSelected ? "rgba(99, 102, 241, 0.15)" : "rgba(15, 23, 42, 0.8)",
+                      border: isSelected
+                        ? "2px solid #6366f1"
+                        : "1px solid rgba(148, 163, 184, 0.3)",
+                      background: isSelected
+                        ? "rgba(99, 102, 241, 0.15)"
+                        : "rgba(15, 23, 42, 0.8)",
                       color: "#e5e7eb",
                       cursor: "pointer",
                       display: "block",
@@ -660,16 +678,50 @@ export default function App() {
                       }}
                     >
                       <div>
-                        <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginBottom: "0.2rem" }}>Source IP</div>
+                        <div
+                          style={{
+                            color: "#94a3b8",
+                            fontSize: "0.7rem",
+                            marginBottom: "0.2rem",
+                          }}
+                        >
+                          Source IP
+                        </div>
                         <div style={{ fontWeight: 600 }}>{srcIp}</div>
-                        <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginBottom: "0.2rem" }}>Source MAC</div>
+                        <div
+                          style={{
+                            color: "#94a3b8",
+                            fontSize: "0.7rem",
+                            marginBottom: "0.2rem",
+                          }}
+                        >
+                          Source MAC
+                        </div>
                         <div style={{ fontWeight: 600 }}>{srcMac}</div>
                       </div>
-                      <span style={{ color: "#64748b", fontSize: "1.2rem" }}>→</span>
+                      <span style={{ color: "#64748b", fontSize: "1.2rem" }}>
+                        →
+                      </span>
                       <div>
-                        <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginBottom: "0.2rem" }}>Destination IP</div>
+                        <div
+                          style={{
+                            color: "#94a3b8",
+                            fontSize: "0.7rem",
+                            marginBottom: "0.2rem",
+                          }}
+                        >
+                          Destination IP
+                        </div>
                         <div style={{ fontWeight: 600 }}>{dstIp}</div>
-                        <div style={{ color: "#94a3b8", fontSize: "0.7rem", marginBottom: "0.2rem" }}>Destination MAC</div>
+                        <div
+                          style={{
+                            color: "#94a3b8",
+                            fontSize: "0.7rem",
+                            marginBottom: "0.2rem",
+                          }}
+                        >
+                          Destination MAC
+                        </div>
                         <div style={{ fontWeight: 600 }}>{dstMac}</div>
                       </div>
                     </div>
@@ -693,8 +745,20 @@ export default function App() {
                 background: "#0f172a",
               }}
             >
-              <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                <h3 style={{ margin: "0.75rem 1rem", fontSize: "0.95rem", fontWeight: 600 }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  minWidth: 0,
+                }}
+              >
+                <h3
+                  style={{
+                    margin: "0.75rem 1rem",
+                    fontSize: "0.95rem",
+                    fontWeight: 600,
+                  }}
+                >
                   Raw Packet Metadata
                 </h3>
                 <pre
@@ -703,7 +767,8 @@ export default function App() {
                     margin: 0,
                     padding: "1rem",
                     fontSize: "0.75rem",
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+                    fontFamily:
+                      "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
                     background: "#020617",
                     color: "#e5e7eb",
                     overflow: "auto",
@@ -734,21 +799,43 @@ export default function App() {
                       style={{
                         padding: "0.75rem",
                         borderRadius: "0.4rem",
-                        border: (selectedEntry.alert as AlertMessage).severity === "high" ? "2px solid #dc2626" : "1px solid rgba(148, 163, 184, 0.3)",
-                        background: (selectedEntry.alert as AlertMessage).severity === "high" ? "rgba(220, 38, 38, 0.15)" : "transparent",
+                        border:
+                          (selectedEntry.alert as AlertMessage).severity ===
+                          "high"
+                            ? "2px solid #dc2626"
+                            : "1px solid rgba(148, 163, 184, 0.3)",
+                        background:
+                          (selectedEntry.alert as AlertMessage).severity ===
+                          "high"
+                            ? "rgba(220, 38, 38, 0.15)"
+                            : "transparent",
                       }}
                     >
                       <div
                         style={{
                           fontSize: "0.8rem",
                           fontWeight: 600,
-                          color: (selectedEntry.alert as AlertMessage).severity === "high" ? "#dc2626" : "#94a3b8",
+                          color:
+                            (selectedEntry.alert as AlertMessage).severity ===
+                            "high"
+                              ? "#dc2626"
+                              : "#94a3b8",
                           marginBottom: "0.35rem",
                         }}
                       >
-                        {(selectedEntry.alert as AlertMessage).fault.replace(/_/g, " ")}
+                        {(selectedEntry.alert as AlertMessage).fault.replace(
+                          /_/g,
+                          " ",
+                        )}
                       </div>
-                      <p style={{ margin: 0, fontSize: "0.8rem", color: "#e5e7eb", lineHeight: 1.4 }}>
+                      <p
+                        style={{
+                          margin: 0,
+                          fontSize: "0.8rem",
+                          color: "#e5e7eb",
+                          lineHeight: 1.4,
+                        }}
+                      >
                         {(selectedEntry.alert as AlertMessage).explanation}
                       </p>
                     </div>
@@ -760,13 +847,34 @@ export default function App() {
                         background: "rgba(15, 23, 42, 0.5)",
                       }}
                     >
-                      <div style={{ fontSize: "0.75rem", fontWeight: 600, color: "#94a3b8", marginBottom: "0.35rem" }}>
+                      <div
+                        style={{
+                          fontSize: "0.75rem",
+                          fontWeight: 600,
+                          color: "#94a3b8",
+                          marginBottom: "0.35rem",
+                        }}
+                      >
                         Additional Details
                       </div>
                       <div style={{ fontSize: "0.8rem", color: "#e5e7eb" }}>
                         <div>Protocol: HTTP, TCP</div>
-                        <div>Source IP: {deriveNetworkDisplay((selectedEntry.alert as AlertMessage).event_id).srcIp}</div>
-                        <div>Destination IP: {deriveNetworkDisplay((selectedEntry.alert as AlertMessage).event_id).dstIp}</div>
+                        <div>
+                          Source IP:{" "}
+                          {
+                            deriveNetworkDisplay(
+                              (selectedEntry.alert as AlertMessage).event_id,
+                            ).srcIp
+                          }
+                        </div>
+                        <div>
+                          Destination IP:{" "}
+                          {
+                            deriveNetworkDisplay(
+                              (selectedEntry.alert as AlertMessage).event_id,
+                            ).dstIp
+                          }
+                        </div>
                         <div>Timestamp: {new Date().toISOString()}</div>
                       </div>
                     </div>
@@ -783,7 +891,14 @@ export default function App() {
                       fontSize: "0.85rem",
                     }}
                   >
-                    {(selectedEntry.alert as { error: string; message: string }).message}
+                    {
+                      (
+                        selectedEntry.alert as {
+                          error: string;
+                          message: string;
+                        }
+                      ).message
+                    }
                   </div>
                 )}
               </div>
@@ -803,7 +918,14 @@ export default function App() {
             minWidth: 0,
           }}
         >
-          <h2 style={{ marginTop: 0, marginBottom: "0.5rem", fontSize: "1.1rem", fontWeight: 600 }}>
+          <h2
+            style={{
+              marginTop: 0,
+              marginBottom: "0.5rem",
+              fontSize: "1.1rem",
+              fontWeight: 600,
+            }}
+          >
             Test Event
           </h2>
           <p
@@ -815,7 +937,12 @@ export default function App() {
             }}
           >
             Edit the JSON payload and send it to{" "}
-            <code style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco", fontSize: "0.8rem" }}>
+            <code
+              style={{
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco",
+                fontSize: "0.8rem",
+              }}
+            >
               {WS_URL}
             </code>
             .

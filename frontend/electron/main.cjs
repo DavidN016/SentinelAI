@@ -135,7 +135,7 @@ function stopCaptureStub() {
 app.whenReady().then(() => {
   mainWindow = createWindow();
   connect();
-  startCaptureStub();
+  // Do not auto-send: events only when user clicks "Send event" (or Run demo stream)
 
   mainWindow.on("closed", () => {
     mainWindow = null;
