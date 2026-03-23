@@ -1,143 +1,145 @@
 # SentinelAI
 
-Real-time threat detection for packet and query events. Capture events, stream them to a FastAPI backend, optimize with ChromaDB repeat-offender caching, and analyze with parallel agents. Alerts are shown in an Electron + React dashboard with severity-based UI (e.g. red state for high severity).
+SentinelAI is a desktop security monitoring app that detects suspicious packet/query payloads in real time and explains the risk level.
 
-## Architecture
+It combines:
+- a **FastAPI backend** for WebSocket ingestion + threat analysis,
+- a **ChromaDB cache** to short-circuit repeat offenders,
+- and an **Electron + React dashboard** for live alerts.
 
-1. **Capture** (Electron main) → **Stream** (WebSocket to FastAPI)
-2. **Optimize** (ChromaDB embed + repeat check) → **Analyze** (parallel agents)
-3. Backend sends **Alert** → Electron main → IPC → **React** (red + explanation)
+## What This Project Does
 
-Repeat offenders are served from ChromaDB cache, skipping the analysis agents for a significant reduction in latency and cost.
+1. Captures payload-like events in the Electron process (currently a stub generator).
+2. Streams events to `ws://127.0.0.1:8000/ws/threats`.
+3. Checks ChromaDB for similar past events.
+4. Runs AI-based analysis when no cache hit exists.
+5. Sends an `Alert` back to the desktop UI with `fault`, `severity`, and explanation.
 
 ## Tech Stack
 
-| Layer        | Stack |
-|-------------|--------|
-| Backend     | Python 3, FastAPI, WebSocket, ChromaDB (persistent), LangGraph-style agents |
-| Shared      | Pydantic schemas (`PacketEvent`, `Alert`) in `shared/` |
-| Frontend    | React 19, TypeScript, Vite |
-| Desktop     | Electron 33 |
-| Capture     | Stub: fake SQLi every 30s; later: real packet capture (e.g. tshark) |
+| Layer | Stack |
+|---|---|
+| Backend | Python, FastAPI, Uvicorn, WebSocket, ChromaDB |
+| AI/Analysis | LangChain/LangGraph-style workflow + Groq LLM |
+| Frontend | React 19, TypeScript, Vite |
+| Desktop | Electron |
+| Shared types | Pydantic schemas in `shared/` |
 
-## Project Structure
+## Repository Structure
 
-```
+```text
 SentinelAI/
-├── backend/           # FastAPI app
-│   ├── main.py        # WebSocket /ws/threats, CORS
-│   ├── agents/       # Threat analysis (graph, nodes)
-│   └── database/     # ChromaDB vector store (repeat-offender cache)
+├── backend/               # FastAPI WebSocket API + analysis pipeline
+│   ├── agents/            # Threat-analysis workflow/nodes
+│   ├── database/          # ChromaDB vector cache
+│   ├── requirements.txt
+│   └── main.py
+├── frontend/              # React UI + Electron desktop shell
+│   ├── electron/          # Electron main/preload
+│   ├── src/               # React app
+│   └── package.json
 ├── shared/
-│   └── schemas.py    # PacketEvent, Alert (Pydantic)
-├── frontend/         # React + Vite + Electron
-│   ├── src/          # App, components, WebSocket/IPC usage
-│   └── electron/     # main.cjs, preload.cjs (capture stub, IPC)
-├── scripts/
-│   └── clear_vectors.py   # Clear ChromaDB collection
-├── plan.md           # Step-by-step implementation plan
-└── README.md
+│   └── schemas.py         # Shared PacketEvent / Alert schemas
+└── scripts/
+    └── clear_vectors.py   # Utility: clear ChromaDB cache
 ```
 
 ## Prerequisites
 
-- **Python 3.10+** (backend)
-- **Node.js 18+** and npm (frontend)
-- Run backend and frontend from the **repo root** so `shared/` is on `PYTHONPATH` when starting the API.
+- Python `3.10+`
+- Node.js `18+` and npm
+- A Groq API key (for LLM analysis)
 
-## Setup
+## Quick Start (Development)
 
-### Backend
-
-From the repo root:
+### 1) Clone and install dependencies
 
 ```bash
+# backend deps
 cd backend
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-### Frontend
-
-```bash
-cd frontend
+# frontend deps
+cd ../frontend
 npm install
 ```
 
-## Environment Variables
+### 2) Start backend
 
-| Variable | Where | Description |
-|----------|--------|-------------|
-| `GROQ_API_KEY` | Backend (required for analysis) | Groq API key for Llama 3 threat-analysis agents. Get one at [console.groq.com](https://console.groq.com). |
-| `SENTINELAI_WS_URL` | Electron (optional) | WebSocket URL. Default: `ws://127.0.0.1:8000/ws/threats` |
-| `SENTINELAI_CHROMA_PATH` | Backend (optional) | ChromaDB persist directory. Default: `backend/database/.chroma` |
-
-## Running
-
-### 1. Start the backend
-
-Set `GROQ_API_KEY` (required for XSS/SQL/Payload AI agents). From repo root (so `shared` is importable):
+Open terminal A:
 
 ```bash
 cd backend
-export GROQ_API_KEY="your-groq-api-key"   # or use a .env file
+source .venv/bin/activate   # if not already active
+export GROQ_API_KEY="your-groq-api-key"
 python main.py
 ```
 
-Or with uvicorn directly:
+Backend health: `http://127.0.0.1:8000`  
+WebSocket endpoint: `ws://127.0.0.1:8000/ws/threats`
 
-```bash
-cd backend
-uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-```
+### 3) Start desktop app
 
-Backend: http://127.0.0.1:8000  
-WebSocket: `ws://127.0.0.1:8000/ws/threats`
-
-### 2. Run the Electron app (dev)
-
-In another terminal:
+Open terminal B:
 
 ```bash
 cd frontend
 npm run electron:dev
 ```
 
-This starts Vite (port 5173) and Electron. The main process connects to the backend WebSocket and runs the capture stub (fake SQL injection event every 30 seconds). Alerts appear in the React UI; high/medium severity show a danger state; repeat offenders are labeled.
+This launches Vite + Electron. Alerts stream into the React UI in real time.
 
-### 3. Production-style Electron (no Vite)
+## Environment Variables
 
-Build the frontend, then run Electron against the built files:
+| Variable | Required | Used by | Default | Purpose |
+|---|---|---|---|---|
+| `GROQ_API_KEY` | Yes (for analysis) | Backend | none | API key for threat-analysis LLM calls |
+| `SENTINELAI_WS_URL` | No | Electron main | `ws://127.0.0.1:8000/ws/threats` | Override backend WebSocket URL |
+| `SENTINELAI_CHROMA_PATH` | No | Backend | `backend/database/.chroma` | Override ChromaDB persistence directory |
+
+## Common Commands
+
+### Backend
+
+```bash
+cd backend
+python main.py
+```
+
+Alternative:
+
+```bash
+cd backend
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### Frontend / Electron
 
 ```bash
 cd frontend
-npm run build
-npm run electron:start
+npm run electron:dev     # dev mode (Vite + Electron)
+npm run build            # production frontend build
+npm run electron:start   # run Electron against built frontend
+npm run electron:build   # package desktop app
+npm run lint             # lint frontend code
 ```
 
-## Scripts
+### Utilities
 
-- **Clear ChromaDB vectors** (e.g. to reset repeat-offender cache):
+```bash
+python scripts/clear_vectors.py
+```
 
-  From repo root:
+Clears stored vectors/alerts from the ChromaDB repeat-offender cache.
 
-  ```bash
-  python scripts/clear_vectors.py
-  ```
+## API Notes
 
-  Or with `PYTHONPATH` set to repo root from anywhere.
+- `GET /` returns service health.
+- `WS /ws/threats` accepts `PacketEvent`-like JSON (`payload` or `query`) and returns one `Alert` per event.
 
-## API
+## Current State
 
-- **GET /**  
-  Health: `{"status":"ok","service":"sentinelai-backend"}`
-
-- **WebSocket /ws/threats**  
-  - **Client → server:** JSON object compatible with `PacketEvent`: `timestamp`, `source`, `payload` (or `query`), optional `metadata`.  
-  - **Server → client:** Single `Alert` JSON per event: `fault`, `severity`, `explanation`, `is_repeat_offender`, `event_id`.  
-  - On validation/parse errors, server may send `{"error":"...", "message":"..."}`.
-
-## Implementation Plan
-
-See [plan.md](plan.md) for the step-by-step Capture → Stream → Optimize → Analyze → Alert checklist and flow reference.
+- Event capture is currently a **stub generator** in Electron (not full packet sniffing yet).
+- Repeat-offender optimization is enabled via persistent ChromaDB caching.
